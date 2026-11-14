@@ -1,7 +1,16 @@
-#!/bin/bash
+#!/usr/bin/env bash
 LOGFILE=$HOME/.xsession-errors
 APPLET="xsession@claudiux"
 ICON=$HOME/.local/share/cinnamon/applets/$APPLET/icons/face-glasses-symbolic.svg
 TITLE="$HOME/.xsession-errors"
-tail --lines=+1 -f $LOGFILE | zenity --title "$TITLE" --text-info --width 1400 --height 960 --window-icon="$ICON"
+XENITY=$(echo -n $(which xenity zenity yad  2>/dev/null | head -n 1))
+#~ PROGRAM=$0
+STR_EDIT=$(gettext -d nemo Edit)
+tail --lines=+1 -f $LOGFILE | $XENITY --title "$TITLE" --text-info --width 1400 --height 960 --window-icon="$ICON" --ok-label="$STR_EDIT" #--extra-button "Restart Cinnamon" --ok-button "OK"
+
+RESULT=$(echo -n "$?")
+if [ "$RESULT" = "0" ]; then { # ok button pressed:
+    xdg-open $LOGFILE
+}; fi
+
 exit 0

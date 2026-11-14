@@ -71,6 +71,12 @@ MyApplet.prototype = {
                 null);
 
             this.settings.bindProperty(Settings.BindingDirection.IN,
+                "iconTheme",
+                "iconTheme",
+                this.setupIconPaths,
+                null)
+
+            this.settings.bindProperty(Settings.BindingDirection.IN,
                 "useBatteryLowSound",
                 "useBatteryLowSound",
                 this.on_settings_changed,
@@ -112,18 +118,7 @@ MyApplet.prototype = {
             this.helpfile = metadata.path + "/../README.md";
             this.wait4cmd = false;
             this.batteryPath = "";
-            this.battery100 = metadata.path + "/icons/battery-100.png";
-            this.battery080 = metadata.path + "/icons/battery-080.png";
-            this.battery060 = metadata.path + "/icons/battery-060.png";
-            this.battery040 = metadata.path + "/icons/battery-040.png";
-            this.batteryCaution = metadata.path + "/icons/battery-caution.png";
-            this.batteryLow = metadata.path + "/icons/battery-low.png";
-            this.batteryCharging100 = metadata.path + "/icons/battery-charging.png";
-            this.batteryCharging080 = metadata.path + "/icons/battery-charging-080.png";
-            this.batteryCharging060 = metadata.path + "/icons/battery-charging-060.png";
-            this.batteryCharging040 = metadata.path + "/icons/battery-charging-040.png";
-            this.batteryChargingCaution = metadata.path + "/icons/battery-charging-caution.png";
-            this.batteryChargingLow = metadata.path + "/icons/battery-charging-low.png";
+
 
             // Set initial value
             this.set_applet_icon_path(this.batteryCharging100);
@@ -153,8 +148,8 @@ MyApplet.prototype = {
                 this.textEd = "xdg-open";
             }
 
-            // Check that all Dependencies Met by presence of upower, sox and zenity
-            if (GLib.find_program_in_path("upower") && GLib.find_program_in_path("sox") && GLib.find_program_in_path("zenity")) {
+            // Check that all Dependencies Met by presence of upower, sox and xenity
+            if (GLib.find_program_in_path("upower") && GLib.find_program_in_path("sox") && GLib.find_program_in_path("xenity")) {
                 this.dependenciesMet = true;
             } else {
                 let icon = new St.Icon({
@@ -162,7 +157,7 @@ MyApplet.prototype = {
                     icon_type: St.IconType.FULLCOLOR,
                     icon_size: 36
                 });
-                Main.criticalNotify(_("Some Dependencies not Installed"), _("'upower', 'sox' and 'zenity' are required for this applet to have all its facilities including notifications and audible alerts .\n\nPlease read the help file on how to install them."), icon);
+                Main.criticalNotify(_("Some Dependencies not Installed"), _("'upower', 'sox' and 'xenity' are required for this applet to have all its facilities including notifications and audible alerts .\n\nPlease read the help file on how to install them."), icon);
                 this.dependenciesMet = false;
             }
 
@@ -227,6 +222,21 @@ MyApplet.prototype = {
         } catch (e) {
             global.logError(e);
         }
+    },
+
+    setup_icon_paths: function () {
+        this.battery100 = metadata.path + `/icons/${this.iconTheme}/battery-100.png`;
+        this.battery080 = metadata.path + `/icons/${this.iconTheme}/battery-080.png`;
+        this.battery060 = metadata.path + `/icons/${this.iconTheme}/battery-060.png`;
+        this.battery040 = metadata.path + `/icons/${this.iconTheme}/battery-040.png`;
+        this.batteryCaution = metadata.path + `/icons/${this.iconTheme}/battery-caution.png`;
+        this.batteryLow = metadata.path + `/icons/${this.iconTheme}/battery-low.png`;
+        this.batteryCharging100 = metadata.path + `/icons/${this.iconTheme}/battery-charging.png`;
+        this.batteryCharging080 = metadata.path + `/icons/${this.iconTheme}/battery-charging-080.png`;
+        this.batteryCharging060 = metadata.path + `/icons/${this.iconTheme}/battery-charging-060.png`;
+        this.batteryCharging040 = metadata.path + `/icons/${this.iconTheme}/battery-charging-040.png`;
+        this.batteryChargingCaution = metadata.path + `/icons/${this.iconTheme}/battery-charging-caution.png`;
+        this.batteryChargingLow = metadata.path + `/icons/${this.iconTheme}/battery-charging-low.png`;
     },
 
 
@@ -620,7 +630,7 @@ Bug Fix for use with early versions of Cinnamon
  * Inhibited use of hide_applet_label() to Cinnamon version 3.2 or higher in vertical panels.
  * Corrected Icon Only display mode
 ### 1.3.2
- * Add checks that sox and zenity are installed and warn that full facilities are not available without them.
+ * Add checks that sox and xenity are installed and warn that full facilities are not available without them.
  * Improve handling of completely empty batteries.
  * Update README.md, CHANGELOG.md and metadata.json
  * Update batterymonitor.pot so translations can be updated.

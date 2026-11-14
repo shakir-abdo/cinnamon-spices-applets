@@ -47,7 +47,7 @@ const REMEMBER_RECENT_KEY = "remember-recent-files";
 const AppUtils = require('./appUtils');
 
 let appsys = Cinnamon.AppSystem.get_default();
-let visiblePane = "favs";
+
 const RefreshFlags = Object.freeze({
     APP:    0b00001,
     FAV:    0b00010,
@@ -395,6 +395,9 @@ class ApplicationContextMenuItem extends PopupMenu.PopupBaseMenuItem {
             case "uninstall":
                 Util.spawnCommandLine("/usr/bin/cinnamon-remove-application '" + this._appButton.app.get_app_info().get_filename() + "'");
                 break;
+            case "app_properties":
+                Util.spawn(["cinnamon-desktop-editor", "-mlauncher", "-o" + this._appButton.app.get_app_info().get_filename()]);
+                break;
             case "run_with_nvidia_gpu":
                 Util.spawnCommandLine("optirun gtk-launch " + this._appButton.app.get_id());
                 break;
@@ -474,6 +477,12 @@ class GenericApplicationButton extends SimpleMenuItem {
             menu.addMenuItem(menuItem);
         }
 
+        let appInfo = this.app.get_app_info ? this.app.get_app_info() : null;
+        if (appInfo && appInfo.get_filename()) {
+            menuItem = new ApplicationContextMenuItem(this, _("Properties"), "app_properties", "document-properties");
+            menu.addMenuItem(menuItem);
+        }
+
         if (this.applet._canUninstallApps) {
             menuItem = new ApplicationContextMenuItem(this, _("Uninstall"), "uninstall", "edit-delete");
             menu.addMenuItem(menuItem);
@@ -542,10 +551,6 @@ class TransientButton extends SimpleMenuItem {
     }
 }
 
-String.prototype.replaceAt=function(index, character) {
-    return this.substr(0, index) + character + this.substr(index+character.length);
-};
-
 function TooltipCustom(actor, string, multiline) {
     this._init(actor, string, multiline);
 }
@@ -562,7 +567,7 @@ TooltipCustom.prototype = {
 
             for (let i = 0; i < tooltipLines; i++) {
                 lastSpacePos = formatString.lastIndexOf(" ", lastSpacePos + tooltipWidth);
-                formatString = formatString.replaceAt(lastSpacePos, "\n");
+                formatString = formatString.substring(0, lastSpacePos) + "\n" + formatString.substring(lastSpacePos + 1);
             }
         }
 
@@ -624,6 +629,7 @@ class ApplicationButton extends GenericApplicationButton {
     _onDragEnd() {
         this.applet.favoritesBox._delegate._clearDragPlaceholder();
     }
+
     destroy() {
         delete this._draggable;
         super.destroy();
@@ -675,7 +681,7 @@ class WebSearchButton extends SimpleMenuItem {
     }
 
     activate() {
-        Main.Util.spawnCommandLine("xdg-open " + this.searchEngineURL + encodeURIComponent(this.name));
+        Util.spawnCommandLine("xdg-open " + this.searchEngineURL + encodeURIComponent(this.name));
         this.applet.menu.close();
     }
 }
@@ -1557,8 +1563,8 @@ RightButtonsBox.prototype = {
         this.shutdown3._update(quicklauncherLayout, shutdownMenuLayout);
         this.logout._update(quicklauncherLayout, shutdownMenuLayout);
         this.logout2._update(quicklauncherLayout, shutdownMenuLayout);
-        this.lock._update(quicklauncherLayout, shutdownMenuLayout);
-        this.lock2._update(quicklauncherLayout, shutdownMenuLayout);
+        this.lock && this.lock._update(quicklauncherLayout, shutdownMenuLayout);
+        this.lock2 && this.lock2._update(quicklauncherLayout, shutdownMenuLayout);
 
         switch (userBoxLayout) {
             case "userHide":
@@ -1641,8 +1647,8 @@ RightButtonsBox.prototype = {
         let screensaver_settings = new Gio.Settings({
             schema: "org.cinnamon.desktop.screensaver"
         });
-        let screensaver_dialog = Gio.file_new_for_path("/usr/bin/cinnamon-screensaver-command");
-        if (screensaver_dialog.query_exists(null)) {
+        let screensaver_dialog = GLib.find_program_in_path("cinnamon-screensaver-command");
+        if (screensaver_dialog) {
             if (screensaver_settings.get_boolean("ask-for-away-message")) {
                 this.lock = new TextBoxItem(_("Lock screen"), lockDescription, "system-lock-screen", "Util.spawnCommandLine('cinnamon-screensaver-lock-dialog')", this.menu, this.hoverIcon, 'lockscreen-vertical');
                 this.lock2 = new TextBoxItem("", lockDescription, "system-lock-screen", "Util.spawnCommandLine('cinnamon-screensaver-lock-dialog')", this.menu, this.hoverIcon, 'lockscreen-horizontal');
@@ -1663,11 +1669,11 @@ RightButtonsBox.prototype = {
 
         this.shutDownIconBox.add_actor(this.shutdown2.actor);
         this.shutDownIconBox.add_actor(this.logout.actor);
-        this.shutDownIconBox.add_actor(this.lock.actor);
+        this.lock && this.shutDownIconBox.add_actor(this.lock.actor);
 
         this.shutDownIconBoxXP.add_actor(this.shutdown3.actor);
         this.shutDownIconBoxXP.add_actor(this.logout2.actor);
-        this.shutDownIconBoxXP.add_actor(this.lock2.actor);
+        this.lock2 && this.shutDownIconBoxXP.add_actor(this.lock2.actor);
     },
 
     _getPreferredHeight: function(actor, forWidth, alloc) {
@@ -1922,6 +1928,7 @@ class CinnamonMenuApplet extends Applet.TextIconApplet {
         this._searchActiveIcon = new St.Icon({ style_class: 'menu-search-entry-icon',
             icon_name: 'edit-clear',
             icon_type: St.IconType.SYMBOLIC });
+        this.visiblePane = "favs";
         this._searchIconClickedId = 0;
         this._applicationsButtons = [];
         this._applicationsButtonFromApp = {};
@@ -2260,7 +2267,7 @@ class CinnamonMenuApplet extends Applet.TextIconApplet {
 
             // Quicklauncher places icon
             let quicklauncher_places_icon = this.quicklauncher_places[i].icon;
-            if (quicklauncher_places_icon == "")
+            if (!quicklauncher_places_icon)
                 quicklauncher_places_icon = "folder";
 
             // Quicklauncher places button
@@ -2288,7 +2295,7 @@ class CinnamonMenuApplet extends Applet.TextIconApplet {
 
             // Quicklauncher apps icon
             let quicklauncher_apps_icon = this.quicklauncher_apps[i].icon;
-            if (quicklauncher_apps_icon == "")
+            if (!quicklauncher_apps_icon)
                 quicklauncher_apps_icon = "exec";
             else if (!Gtk.IconTheme.get_default().has_icon(quicklauncher_apps_icon))
                 quicklauncher_apps_icon = "image-missing";
@@ -2348,7 +2355,7 @@ class CinnamonMenuApplet extends Applet.TextIconApplet {
             this.lastSelectedCategory = null;
 
             if(this.menuLayout == "stark-menu" || this.quicklinksupdated) {
-                if (visiblePane == "apps")
+                if (this.visiblePane == "apps")
                     this.switchPanes("favs");
                 this.quicklinksupdated = false;
             }
@@ -2469,7 +2476,7 @@ class CinnamonMenuApplet extends Applet.TextIconApplet {
             this.rightButtonsBox.shutdown.label.set_text("");
             this.rightButtonsBox.shutdown2.label.set_text("");
         }
-        if (visiblePane == "apps") {
+        if (this.visiblePane == "apps") {
             if (this.favoritesLabel != "")
                 this.appsButton.label.set_text(_(this.favoritesLabel));
             else
@@ -2697,7 +2704,7 @@ class CinnamonMenuApplet extends Applet.TextIconApplet {
                 case null:
                     switch (whichWay) {
                         case "up":
-                            if(visiblePane == "favs") {
+                            if(this.visiblePane == "favs") {
                                 this._activeContainer = this.favoritesBox;
                                 item_actor = this.favBoxIter.getLastVisible();
                             } else {
@@ -2707,7 +2714,7 @@ class CinnamonMenuApplet extends Applet.TextIconApplet {
                             }
                             break;
                         case "down":
-                            if(visiblePane == "favs") {
+                            if(this.visiblePane == "favs") {
                                 this._activeContainer = this.favoritesBox;
                                 item_actor = this.favBoxIter.getFirstVisible();
                             } else {
@@ -2718,7 +2725,7 @@ class CinnamonMenuApplet extends Applet.TextIconApplet {
                             }
                             break;
                         case "right":
-                            if(visiblePane == "favs") {
+                            if(this.visiblePane == "favs") {
                                 this._activeContainer = this.categoriesBox;
                                 item_actor = this.catBoxIter.getFirstVisible();
                                 this.switchPanes("apps");
@@ -2731,11 +2738,11 @@ class CinnamonMenuApplet extends Applet.TextIconApplet {
                         case "left":
                             this._activeContainer = this.favoritesBox;
                             item_actor = this.favBoxIter.getFirstVisible();
-                            if(visiblePane == "apps")
+                            if(this.visiblePane == "apps")
                                 this.switchPanes("favs");
                             break;
                         case "top":
-                            if(visiblePane == "favs") {
+                            if(this.visiblePane == "favs") {
                                 this._activeContainer = this.favoritesBox;
                                 item_actor = this.favBoxIter.getFirstVisible();
                             } else {
@@ -2745,7 +2752,7 @@ class CinnamonMenuApplet extends Applet.TextIconApplet {
                             }
                             break;
                         case "bottom":
-                            if(visiblePane == "favs") {
+                            if(this.visiblePane == "favs") {
                                 this._activeContainer = this.favoritesBox;
                                 item_actor = this.favBoxIter.getLastVisible();
                             } else {
@@ -3294,6 +3301,7 @@ class CinnamonMenuApplet extends Applet.TextIconApplet {
     _refreshFavs() {
         //Remove all favorites
         this.favoritesBox.destroy_all_children();
+        this.contextMenu = null;
 
         //Load favorites again
         this._favoritesButtons = [];
@@ -3409,7 +3417,9 @@ class CinnamonMenuApplet extends Applet.TextIconApplet {
         this.applicationsScrollBox.add_actor(this.applicationsBox);
         this.categoriesScrollBox.add_actor(this.categoriesBox);
         this.applicationsScrollBox.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC);
+        this.applicationsScrollBox.set_clip_to_allocation(true);
         this.categoriesScrollBox.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC);
+        this.categoriesScrollBox.set_clip_to_allocation(true);
         this.categoriesApplicationsBox.actor.add_actor(this.categoriesOverlayBox);
         this.categoriesApplicationsBox.actor.add_actor(this.applicationsScrollBox);
 
@@ -3534,7 +3544,7 @@ class CinnamonMenuApplet extends Applet.TextIconApplet {
                 this._appsBoxWidthResized = true;
             }
             this._resizeAppsBoxHeight();
-            visiblePane = "apps";
+            this.visiblePane = "apps";
             if (this._previousTreeSelectedActor == null)
                 this._allAppsCategoryButton.actor.style_class = "menu-category-button-selected";
         } else {
@@ -3549,7 +3559,7 @@ class CinnamonMenuApplet extends Applet.TextIconApplet {
                 this.rightButtonsBox.actor.show();
             }
             this._resizeAppsBoxHeight();
-            visiblePane = "favs";
+            this.visiblePane = "favs";
             if (this._previousTreeSelectedActor == null)
                 this._allAppsCategoryButton.actor.style_class = "menu-category-button-selected";
         }

@@ -1,4 +1,3 @@
-import { APPLET_SITE } from "../../consts";
 import { notify, notifyError } from "../../lib/notify";
 import { YouTubeClis } from "../../types";
 import { configs } from "../Config";
@@ -13,7 +12,7 @@ export interface YouTubeDownloadServiceProps {
   downloadDir: string;
   title: string;
   onFinished: () => void;
-  onSuccess: () => void;
+  onSuccess: (downloadCommand: string) => void;
   onError: (errorMessage: string, downloadCommand: string) => void;
 }
 
@@ -34,16 +33,9 @@ const notifyYouTubeDownloadFailed = (props: {
 
   notifyError(
     `Couldn't download Song from YouTube due to an Error. Make Sure you have the newest version of ${youtubeCli} installed. 
-    \n<b>Important:</b> Don't use apt for the installation but follow the installation instruction given on the Radio Applet Site in the Cinnamon Store instead`,
+    \n<b>Important:</b> Don't use apt for the installation but follow the installation instruction given on the Radio Applet Site in the Cinnamon Store instead.
+    \nReview the logs for more information.`,
     errorMessage,
-    {
-      additionalBtns: [
-        {
-          text: "View Installation Instruction",
-          onClick: () => spawnCommandLine(`xdg-open ${APPLET_SITE} `),
-        },
-      ],
-    }
   );
 };
 
@@ -74,17 +66,20 @@ const notifyYouTubeDownloadFinished = (props: {
       buttons: [
         {
           text: "Play",
-          onClick: () => spawnCommandLine(`xdg-open '${downloadPath}'`),
+          onClick: () =>
+            spawnCommandLine(
+              `xdg-open '${downloadPath.replaceAll("'", "'\\''")}'`,
+            ),
         },
       ],
-    }
+    },
   );
 };
 
 let downloadProcesses: DownloadProcess[] = [];
 
 const downloadingSongsChangedListener: ((
-  downloadingSongs: DownloadProcess[]
+  downloadingSongs: DownloadProcess[],
 ) => void)[] = [];
 
 export function downloadSongFromYouTube(title: string) {
@@ -117,36 +112,43 @@ export function downloadSongFromYouTube(title: string) {
     },
     onFinished: () => {
       downloadProcesses = downloadProcesses.filter(
-        (downloadingSong) => downloadingSong.songTitle !== title
+        (downloadingSong) => downloadingSong.songTitle !== title,
       );
       downloadingSongsChangedListener.forEach((listener) =>
-        listener(downloadProcesses)
+        listener(downloadProcesses),
       );
     },
-    onSuccess: () => {
-      try {
-        moveFileFromTmpDir({
-          targetDirPath: music_dir_absolut,
-          tmpDirPath,
-          onFileMoved: (props) => {
-            const { fileAlreadyExist, targetFilePath } = props;
+    onSuccess: (downloadCommand) => {
+      moveFileFromTmpDir({
+        targetDirPath: music_dir_absolut,
+        tmpDirPath,
+        onFileMoved: (props) => {
+          const { fileAlreadyExist, targetFilePath } = props;
 
-            updateFileModifiedTime(targetFilePath);
+          updateFileModifiedTime(targetFilePath);
 
-            notifyYouTubeDownloadFinished({
-              downloadPath: targetFilePath,
-              fileAlreadyExist,
-            });
-          },
-        });
-      } catch (error) {
-        const errorMessage =
-          error instanceof imports.gi.GLib.Error ? error.message : error;
-        notifyYouTubeDownloadFailed({
-          youtubeCli,
-          errorMessage: `Failed to copy download from tmp dir. The following error occurred: ${errorMessage}`,
-        });
-      }
+          notifyYouTubeDownloadFinished({
+            downloadPath: targetFilePath,
+            fileAlreadyExist,
+          });
+        },
+        onError: (errorMessage) => {
+          notifyYouTubeDownloadFailed({
+            youtubeCli,
+            errorMessage: `Failed to copy download from tmp dir. The following error occurred: ${errorMessage}. The tmp dir Path is: ${tmpDirPath}. The download command is: ${downloadCommand}`,
+          });
+        },
+        onNoFileNameExtracted: () => {
+          notifyError(
+            `The filename couldn't be extracted from the Youtube Download Cli tool.\n\nThis usually happens because the YouTube search didn't return any results but can also be caused by other errors in the Youtube Download Cli tool. 
+             \nIf this happens consistently for songs that should be downloadable, check that your YouTube Download Cli tool is working correctly.`,
+            "Failed to find any file in the temporary download directory. The tmp dir is: " +
+              tmpDirPath +
+              ". The used download command was: " +
+              downloadCommand,
+          );
+        },
+      });
     },
   };
 
@@ -159,7 +161,7 @@ export function downloadSongFromYouTube(title: string) {
 
   downloadProcesses.push({ songTitle: title, cancelDownload: cancel });
   downloadingSongsChangedListener.forEach((listener) =>
-    listener(downloadProcesses)
+    listener(downloadProcesses),
   );
 }
 
@@ -170,40 +172,64 @@ const moveFileFromTmpDir = (props: {
     targetFilePath: string;
     fileAlreadyExist: boolean;
   }) => void;
+  onError: (error: string) => void;
+  onNoFileNameExtracted: () => void;
 }) => {
-  const { tmpDirPath, targetDirPath, onFileMoved } = props;
+  const { tmpDirPath, targetDirPath, onFileMoved, onError, onNoFileNameExtracted } =
+    props;
 
-  const fileName = File.new_for_path(tmpDirPath)
-    .enumerate_children(
-      "standard::*",
-      FileQueryInfoFlags.NOFOLLOW_SYMLINKS,
-      null
-    )
-    .next_file(null)
-    ?.get_name();
+  try {
+    const fileName = File.new_for_path(tmpDirPath)
+      .enumerate_children(
+        "standard::*",
+        FileQueryInfoFlags.NOFOLLOW_SYMLINKS,
+        null,
+      )
+      .next_file(null)
+      ?.get_name();
 
-  if (!fileName) {
-    throw new Error(`filename couldn't be determined`);
+    if (!fileName) {
+      onNoFileNameExtracted();
+      return;
+    }
+
+    const tmpFile = File.new_for_path(`${tmpDirPath}/${fileName}`);
+    if (tmpFile.get_path()?.endsWith(".webp")) {
+      throw new Error(
+        "Only the cover image has been downloaded. This seems to be a problem with the used Youtube Download Cli tool.",
+      );
+    }
+
+    if (
+      !File.new_for_uri(targetDirPath).query_exists(null) &&
+      !File.new_for_path(targetDirPath).query_exists(null)
+    ) {
+      throw new Error(
+        "The Download Directory specified in the settings doesn't exist. Please create it manually or change the settings.",
+      );
+    }
+
+    const targetFilePath = `${targetDirPath}/${fileName}`;
+    const targetFile = File.parse_name(targetFilePath);
+
+    if (targetFile.query_exists(null)) {
+      onFileMoved({ targetFilePath, fileAlreadyExist: true });
+      return;
+    }
+
+    tmpFile.move(
+      File.parse_name(targetFilePath),
+      FileCopyFlags.BACKUP,
+      null,
+      null,
+    );
+    onFileMoved({ targetFilePath, fileAlreadyExist: false });
+  } catch (error) {
+    const errorMessage =
+      error instanceof imports.gi.GLib.Error ? error.message : error;
+
+    onError(errorMessage as string);
   }
-
-  const tmpFilePath = `${tmpDirPath}/${fileName}`;
-  const tmpFile = File.new_for_path(tmpFilePath);
-  const targetFilePath = `${targetDirPath}/${fileName}`;
-  const targetFile = File.parse_name(targetFilePath);
-
-  if (targetFile.query_exists(null)) {
-    onFileMoved({ targetFilePath, fileAlreadyExist: true });
-    return;
-  }
-
-  // @ts-ignore
-  tmpFile.move(
-    File.parse_name(targetFilePath),
-    FileCopyFlags.BACKUP,
-    null,
-    null
-  );
-  onFileMoved({ targetFilePath, fileAlreadyExist: false });
 };
 
 export const getCurrentDownloadingSongs = () => {
@@ -212,12 +238,12 @@ export const getCurrentDownloadingSongs = () => {
 
 export const cancelDownload = (songTitle: string) => {
   const downloadProcess = downloadProcesses.find(
-    (process) => process.songTitle === songTitle
+    (process) => process.songTitle === songTitle,
   );
 
   if (!downloadProcess) {
     global.logWarning(
-      `can't cancel download for song ${songTitle} as it seems that the song is currently not downloading`
+      `can't cancel download for song ${songTitle} as it seems that the song is currently not downloading`,
     );
     return;
   }
@@ -230,7 +256,7 @@ const updateFileModifiedTime = (filePath: string) => {
     `touch ${filePath
       .replaceAll("'", "\\'")
       .replaceAll(" ", "\\ ")
-      .replaceAll('"', '\\"')}`
+      .replaceAll('"', '\\"')}`,
   );
 
   // TODO: this would be better but for some reasons it doesn't work:
@@ -245,7 +271,7 @@ const updateFileModifiedTime = (filePath: string) => {
 };
 
 export function addDownloadingSongsChangeListener(
-  callback: (downloadingSongs: DownloadProcess[]) => void
+  callback: (downloadingSongs: DownloadProcess[]) => void,
 ) {
   downloadingSongsChangedListener.push(callback);
 }

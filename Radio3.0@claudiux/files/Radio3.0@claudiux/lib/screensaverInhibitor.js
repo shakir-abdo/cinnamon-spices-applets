@@ -1,4 +1,4 @@
-// This code come from the applet screen-inhibit@mtwebster.
+// This code comes from the applet screen-inhibit@mtwebster.
 // Author: Michael Webster.
 const Lang = imports.lang;
 const {DBusProxy, DBus} = imports.gi.Gio; // Gio
@@ -34,16 +34,16 @@ function SessionManager(initCallback, cancellable) {
   return new SessionManagerProxy(DBus.session, 'org.gnome.SessionManager', '/org/gnome/SessionManager', initCallback, cancellable);
 }
 
-class ScreensaverInhibitor {
+var ScreensaverInhibitor = class ScreensaverInhibitor {
   constructor(applet) {
     this.applet = applet;
 
     this._inhibit = undefined;
     this.inhibited = false;
 
-    SessionManager(Lang.bind(this, function(obj, err) {
+    SessionManager( (obj, err) => {
       this._sessionProxy = obj;
-    }));
+    });
 
     this._onInhibit = function(cookie) {
       this._inhibit = cookie;
@@ -73,7 +73,7 @@ class ScreensaverInhibitor {
       0,
       "inhibit mode",
       9,
-      Lang.bind(this, this._onInhibit)
+      (cookie) => { this._onInhibit(cookie) }
     );
 
     this.inhibited = true;

@@ -36,7 +36,7 @@ function AddHeadersToMessage(message, headers) {
         }
     }
 }
-class Soup3 {
+var Soup3 = class Soup3 {
     constructor() {
         this._httpSession = new Session();
         this._httpSession.user_agent = "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:37.0) Gecko/20100101 Firefox/37.0";
@@ -73,7 +73,7 @@ class Soup3 {
         return data;
     }
 }
-class Soup2 {
+var Soup2 = class Soup2 {
     constructor() {
         this._httpSession = new SessionAsync();
         const { ProxyResolverDefault } = imports.gi.Soup;
@@ -111,12 +111,12 @@ class Soup2 {
         return data;
     }
 }
-const soupLib = imports.gi.Soup.MAJOR_VERSION == 3 ? new Soup3() : new Soup2();
-
+//~ const soupLib = imports.gi.Soup.MAJOR_VERSION == 3 ? new Soup3() : new Soup2();
+const soupLib = (imports.gi.Soup.SessionAsync == undefined) ? new Soup3() : new Soup2();
 ;// CONCATENATED MODULE: ./src/3_8/lib/httpLib.ts
 
 
-class HttpLib {
+var HttpLib = class HttpLib {
     static get Instance() {
         if (this.instance == null)
             this.instance = new HttpLib();

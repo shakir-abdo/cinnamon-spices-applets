@@ -1,18 +1,38 @@
 const GLib = imports.gi.GLib;
 const Gio = imports.gi.Gio; // Needed for file infos
 //const Util = imports.misc.util;
-const Lang = imports.lang;
 const Signals = imports.signals;
-const Util = require("./lib/util");
+const Cinnamon = imports.gi.Cinnamon;
+const Extension = imports.ui.extension;
 
-const {to_string} = require("./lib/to-string");
+function _require(relPath) {
+    if (Extension.getCurrentExtension) {
+        var Me = Extension.getCurrentExtension();
+        return Me.imports[relPath];
+    } else {
+        return require(relPath);
+    }
+}
+
+const Util = _require("./lib/util");
+
+const {to_string} = _require("./lib/to-string");
+const {readFileAsync} = _require("./lib/readFileAsync");
+
+// A default low temperature to return when in d3cold
+const d3cold_temperature = "35";
+
+// Default sysfs mount point
+const sysfs_mount_point = "/sys";
 
 const {
   UUID,
   HOME_DIR,
+  USER_DATA_DIR,
   APPLET_DIR,
   SCRIPTS_DIR,
   ICONS_DIR,
+  NVIDIA_SMI_VERSION_REGEX,
   _,
   DEBUG,
   RELOAD,
@@ -20,20 +40,36 @@ const {
   log,
   logError,
   versionCompare
-} = require("./lib/constants");
+} = _require("./lib/constants");
 
+var LOCAL_DATA = {
+      "temps": {},
+      "fans": {},
+      "voltages": {},
+      "intrusions": {},
+      "currents": {},
+      "ignored": {}
+    };
 /**
  * Class SensorsReaper
  */
-class SensorsReaper {
+var SensorsReaper = class SensorsReaper {
   constructor(applet, refresh_interval) {
     this.applet = applet;
     this.refresh_interval = refresh_interval; // seconds
     this.last_attempt_DateTime= undefined;  // the last time we checked sensors
-
+    this.nvidia_cards = {};
     this.sensors_json_data = {};
     this.sensors_program = ""+GLib.find_program_in_path("sensors");
     this.get_sensors_command();
+
+    // Support for the Nvidia System Management Interface (nvidia-smi)
+    // The Nvidia System Management Interface docs are at
+    //   https://developer.nvidia.com/system-management-interface
+    // Note: The fan values are returned as a percentage instead of RPM
+    //   so are not processed
+    this.nvidia_smi_program = "" + GLib.find_program_in_path("nvidia-smi");
+    this.get_nvidia_smi_command();
 
     this.in_fahrenheit = false;
     this.raw_data = {};
@@ -41,7 +77,9 @@ class SensorsReaper {
       "temps": {},
       "fans": {},
       "voltages": {},
-      "intrusions": {}
+      "intrusions": {},
+      "currents": {},
+      "ignored": {}
     };
     this.isRunning = false;
   }
@@ -62,7 +100,7 @@ class SensorsReaper {
         this.sensors_command = this.sensors_program + " -u";
         this.sensors_is_json_compatible = false;
         let command = "%s -v".format(this.sensors_program);
-        let subProcess = Util.spawnCommandLineAsyncIO(command, Lang.bind(this, function(stdout, stderr, exitCode) {
+        let subProcess = Util.spawnCommandLineAsyncIO(command, (stdout, stderr, exitCode) => {
           if (exitCode === 0) {
             let output = stdout;
             if (typeof stdout === "object") output = to_string(stdout);
@@ -70,11 +108,102 @@ class SensorsReaper {
             this.applet.sensors_version = sensors_version;
           }
           subProcess.send_signal(9);
-        }));
+        });
       }
       return this.sensors_command;
     } else {
       return undefined
+    }
+  }
+
+  get_nvidia_smi_command() {
+    if (this.nvidia_smi_command != undefined)
+      return this.nvidia_smi_command;
+
+    /*
+      The 'nvidia-smi --version' command returns the version in the following format:
+        NVIDIA-SMI version  : 550.107.02
+        NVML version        : 550.107
+        DRIVER version      : 550.107.02
+        CUDA Version        : 12.4
+
+      The command used here returns a list in headerless csv format with the following fields:
+        GPU name, PCI bus id, and temperature in C
+    */
+    if (this.nvidia_smi_program) {
+      let command = `${this.nvidia_smi_program} --version`;
+      let subProcess = Util.spawnCommandLineAsyncIO(command,
+        (stdout, stderr, exitCode) => {
+          if (exitCode === 0) {
+            let output = stdout;
+            if (typeof stdout === "object")
+              output = to_string(stdout);
+            let versions = output.match(NVIDIA_SMI_VERSION_REGEX);
+            let version =
+              versions === null || versions.length === 0
+                ? null
+                : versions[0];
+            // global.log(`Nvidia SMI version: ${version}`);
+            if (versionCompare(version, "550.107.02") >= 0) {
+              this.nvidia_smi_version = version;
+              this.nvidia_smi_command =
+                `${this.nvidia_smi_program} --format=csv,noheader --query-gpu=name,pci.bus_id,temperature.gpu,index`;
+            }
+            // Test the command because Nvidia doesn't guarantee backwards compatability
+            let testProcess = Util.spawnCommandLineAsyncIO(this.nvidia_smi_command,
+              (stdout, stderr, exitCode) => {
+                if (exitCode != 0) {
+                  global.logError(`Nvidia SMI call failed with code ${exitCode}: ${stdout}, ${stderr}`)
+                  global.log(`Incompatible Nvidia SMI: ${this.nvidia_smi_program} v${this.nvidia_smi_version} `);
+                  this.nvidia_smi_command = undefined;
+                  this.nvidia_smi_program = undefined;
+                  this.nvidia_smi_version = undefined;
+                } else {
+                  global.log(`Nvidia SMI v${this.nvidia_smi_version} command: ${this.nvidia_smi_command}`);
+                  //global.log(`Searching Nvidia power state`);
+
+                  // Gather all Nvidia cards data
+                  let lines = stdout.split('\n');
+                  lines.forEach((element) => {
+                    if(element.indexOf(",") > -1) {
+                      try {
+
+                        const nvidia_information = element.split(', ');
+                        const nvidia_bus_id = nvidia_information[1];
+                        const nvidia_sysfs_path = `${sysfs_mount_point}/bus/pci/devices/${nvidia_bus_id.replace(/^0{8}/, "0000").toLowerCase()}/power_state`;
+                        const nvidia_device_name = nvidia_information[0];
+                        const nvidia_device_id = nvidia_information[3]
+
+                        // Add card
+                        this.nvidia_cards[nvidia_device_id] = {
+                          "bus_id": nvidia_bus_id,
+                          "name": nvidia_device_name
+                        }
+
+                        // Check if we can find the power_state interface for the card
+                        if (GLib.file_test(nvidia_sysfs_path, GLib.FileTest.EXISTS)) {
+                          global.log(`Found Nvidia power state on ${nvidia_sysfs_path}, device name ${nvidia_device_name}, bus id ${nvidia_bus_id}`)
+                          this.nvidia_cards[nvidia_device_id]["sysfs"] = Gio.File.new_for_path(nvidia_sysfs_path)
+                        }
+                        else {
+                          global.logError(`Could not find power_state handle or information for Nvidia card at ${nvidia_sysfs_path}, is sysfs mounted on ${sysfs_mount_point}?`)
+                        }
+                      }
+                      catch (e) {
+                        global.logError(`Could not parse sysfs path for Nvidia power state: ${e}`)
+                      }
+                    }
+                  });
+                }
+                testProcess.send_signal(9);
+              });
+            subProcess.send_signal(9);
+          }
+        });
+
+      return this.nvidia_smi_command;
+    } else {
+      return undefined;
     }
   }
 
@@ -85,34 +214,209 @@ class SensorsReaper {
     this.hide_zero_fan = hide_zero_fan;
     this.hide_zero_voltage = hide_zero_voltage;
     //if (this.in_fahrenheit)
-      //command += "f"; // The -f option of sensors is full of bugs !!!
-    if (this.sensors_command != undefined) {
-      let subProcess = Util.spawnCommandLineAsyncIO(this.sensors_command, Lang.bind (this, function(stdout, stderr, exitCode) {
-        if (exitCode === 0) {
-          if (this.sensors_is_json_compatible)
-            this._sensors_reaped(stdout);
-          else
-            this._sensors_reaped(convert_to_json(stdout));
-        }
-        //Util.unref(subProcess);
-        subProcess.send_signal(9);
-      }));
+      //command += " -f"; // The -f option of sensors is full of bugs !!!
+
+    const XDG_RUNTIME_DIR = GLib.getenv("XDG_RUNTIME_DIR");
+    const SENSORS_DIR = `${XDG_RUNTIME_DIR}/Sensors`;
+    const SENSORS_DATA=`${SENSORS_DIR}/sensors.txt`;
+    if (GLib.file_test(SENSORS_DATA, GLib.FileTest.EXISTS)) {
+      readFileAsync(SENSORS_DATA).then( (contents) => {
+        let _contents = contents.replace(/\,\n\s+\}/g, "}"); // Avoids errors in json formatted data.
+        this._sensors_reaped(_contents);
+        GLib.free(_contents);
+      });
+    } else {
+        if (this.sensors_command != undefined) {
+        let subProcess = Util.spawnCommandLineAsyncIO(this.sensors_command, (stdout, stderr, exitCode) => {
+          if (exitCode === 0) {
+            if (this.sensors_is_json_compatible)
+              this._sensors_reaped(stdout);
+            else
+              this._sensors_reaped(convert_to_json(stdout));
+          }
+          subProcess.send_signal(9);
+        });
+      }
     }
+
   }
 
-  _sensors_reaped(output) {
-    //~ global.log("output: "+JSON.stringify(output, null, 4));
+  get_nvidia_smi_data(id, results) {
+    return new Promise((resolve, reject) => {
+      let subProcess = Util.spawnCommandLineAsyncIO(
+        `${this.nvidia_smi_command} -i ${id}`,
+        (stdout, stderr, exitCode) => {
+          try {
+            if (exitCode === 0) {
+              let output = stdout
+                .replaceAll(", ", ",")
+                .replaceAll("\r", "")
+                .replaceAll(" %", "");
+
+              if (output.endsWith("\n"))
+                output = output.substring(0, output.length - 1);
+
+              let lines = output.split("\n");
+
+              lines.forEach(element => {
+                let values = element.split(",");
+
+                results[values[1]] = {
+                  "Adapter": values[0],
+                  "temp1": {
+                    "temp1_input": values[2]
+                  }
+                };
+              });
+              resolve(results);
+            } else {
+              const error = new Error(
+                `Nvidia SMI call failed with code ${exitCode}: ${stdout}, ${stderr}`
+              );
+              reject(error);
+            }
+          } catch (e) {
+            reject(e);
+          } finally {
+            subProcess.send_signal(9);
+          }
+        }
+      );
+    });
+  }
+
+  reap_nvidia_smi(no_check_gpu_if_d3cold=0) {
+    let results = {};
+
+    if (this.nvidia_smi_command != undefined) {
+
+      if (this.nvidia_cards != null) {
+
+          Promise.all(Object.keys(this.nvidia_cards).map((id) => {
+
+            return new Promise((resolve, reject) => {
+
+              // Don't bother Nvidia card if in d3cold state
+              // and we can check the power state of the card
+              if(no_check_gpu_if_d3cold == 1 && "sysfs" in this.nvidia_cards[id]) {
+                readFileAsync(this.nvidia_cards[id].sysfs).then((power_state) => {
+                  if (power_state.startsWith("D3cold")) {
+                    results[this.nvidia_cards[id].bus_id] = {
+                      "Adapter": this.nvidia_cards[id].name,
+                      "temp1": {
+                        "temp1_input": d3cold_temperature
+                      }
+                    }
+                    global.log(`Adapter ${this.nvidia_cards[id].name} in D3cold state, returning a default low temperature of ${d3cold_temperature}`)
+                    resolve();
+                  }
+                  else {
+                    //global.log(`${this.nvidia_cards[id].name} is active, retrieve its state`);
+                    this.get_nvidia_smi_data(id, results).then(() => {
+                      resolve();
+                    }).catch((error) => {
+                      reject(`Error ${error} while retrieving data from adapter ${this.nvidia_cards[id].name}`);
+                    });
+                  }
+                }).catch((error) => {
+                  reject(`Error ${error} while reading sysfs for adapter ${this.nvidia_cards[id].name}`);
+                })
+              }
+              else {
+                // Just retrieve data from card
+                this.get_nvidia_smi_data(id, results).then(() => {
+                  resolve();
+                }).catch((error) => {
+                  reject(`Error ${error} while retrieving data from adapter ${this.nvidia_cards[id].name}`);
+                });
+              }
+            });
+          })).then(() => {
+            this._sensors_reaped(JSON.stringify(results));
+          }).catch((error) => {
+            global.logError(`ERROR ${error}`);
+          });
+
+        }
+
+      }
+  }
+
+  async _sensors_reaped(output) {
+    if (typeof(output) === "string")
+      output = output.replace(/,\n.*}/g, "\n\t}").replace(/NaN/g, "null");
     this.raw_data = JSON.parse(output);
-    var data = {
-      "temps": {},
-      "fans": {},
-      "voltages": {},
-      "intrusions": {}
-    };
+    //~ log("this.raw_data: "+JSON.stringify(this.raw_data, null, "\t"), true);
+    // LOCAL_DATA = {
+      // "temps": {},
+      // "fans": {},
+      // "voltages": {},
+      // "intrusions": {}
+    // };
+
+    // CUSTOMS BEGIN //
+    //~ let customs = this.applet.custom_sensors;
+    //~ for (let cs of customs) {
+      //~ if (cs.sensor_type.length > 0 && cs.shown_name.length > 0 && cs.sysfile.length > 0) {
+        //~ // log("type: "+cs.sensor_type+"; name: "+cs.shown_name+"; file: "+cs.sysfile, true);
+        //~ switch (cs.sensor_type) {
+          //~ case "temperature":
+            //~ await Cinnamon.get_file_contents_utf8(cs.sysfile, Lang.bind(this, function(utf8_contents) {
+              //~ let cs_value = utf8_contents.split("\n")[0];
+              //~ if (cs_value && cs['user_formula'] && cs['user_formula'].length> 0) {
+                //~ cs_value = 1.0*eval(cs["user_formula"].replace(/\$/g, cs_value));
+              //~ }
+              //~ let custom_name = "CUSTOM: "+cs.shown_name;
+              //~ // log("cs_value: "+cs_value, true);
+              //~ LOCAL_DATA["temps"][custom_name] = {};
+              //~ LOCAL_DATA["temps"][custom_name]["input"] = 1.0*cs_value;
+              //~ if (cs.high_by_user)
+                //~ LOCAL_DATA["temps"][custom_name]["high"] = 1.0*cs.high_by_user;
+              //~ if (cs.crit_by_user) {
+                //~ LOCAL_DATA["temps"][custom_name]["crit"] = 1.0*cs.crit_by_user;
+                //~ LOCAL_DATA["temps"][custom_name]["crit_alarm"] = 0;
+              //~ }
+
+              //~ this.raw_data[custom_name] = {};
+              //~ this.raw_data[custom_name]["Adapter"]  = "CUSTOM";
+              //~ this.raw_data[custom_name][""+cs.shown_name] = LOCAL_DATA["temps"][custom_name];
+
+
+              //~ // this.applet.temp_sensors["custom_"+cs.shown_name] = {
+                //~ // "sensor": "custom_"+cs.shown_name,
+                //~ // "show_in_panel": cs.show_in_panel,
+                //~ // "show_in_tooltip": cs.show_in_tooltip,
+                //~ // "shown_name": cs.shown_name,
+                //~ // "high_by_user": cs.high_by_user,
+                //~ // "crit_by_user": cs.crit_by_user,
+                //~ // "user_formula": cs.user_formula
+              //~ // };
+              //~ // log("CUSTOM: "+JSON.stringify(this.applet.temp_sensors["custom_"+cs.shown_name], null, "\t"), true);
+            //~ }));
+
+            //~ break;
+          //~ case "fan":
+
+            //~ break;
+          //~ case "voltage":
+
+            //~ break;
+          //~ case "intrusion":
+
+            //~ break;
+        //~ }
+      //~ }
+    //~ }
+    // log("LOCAL_DATA[temps]: " + JSON.stringify(LOCAL_DATA["temps"], null, "\t"), true);
+    // CUSTOMS END //
+
     let chips = Object.keys(this.raw_data);
     var adapter = "";
     for (let chip of chips) {
       let features = Object.keys(this.raw_data[chip]);
+
+      if (features.length <= 1)
+        continue;
 
       var complete_name = "";
 
@@ -133,15 +437,15 @@ class SensorsReaper {
           subfeature_name = subfeat.substring(subfeature.indexOf("_")+1);
 
           if (subfeat.startsWith("fan")) {
-            if  (type_of_feature === "" &&
+            if  (type_of_feature.length === 0 &&
                 (!this.hide_zero_fan ||
-                  (subfeat.endsWith("input") && this.raw_data[chip][feature][subfeat] > 0)
+                  (subfeat.endsWith("input") && this.raw_data[chip][feature][subfeat] >= 0)
                 )
             ) {
               type_of_feature = "fans";
             }
           } else if (subfeat.startsWith("temp")) {
-            if  (type_of_feature === "" &&
+            if  (type_of_feature.length === 0 &&
                 (!this.hide_zero_temp ||
                   (subfeat.endsWith("input") && this.raw_data[chip][feature][subfeat] > 0)
                 )
@@ -149,36 +453,50 @@ class SensorsReaper {
               type_of_feature = "temps";
             }
           } else if (subfeat.startsWith("intrusion")) {
-            if  (type_of_feature === "") {
+            if  (type_of_feature.length === 0) {
               type_of_feature = "intrusions";
             }
           } else if (subfeat.startsWith("in")) {
-            if  (type_of_feature === "" &&
+            if  (type_of_feature.length === 0 &&
                 (!this.hide_zero_voltage ||
                   (subfeat.endsWith("input") && this.raw_data[chip][feature][subfeat] > 0)
                 )
             ) {
               type_of_feature = "voltages";
             }
+          } else if (subfeat.startsWith("curr")) {
+            if  (type_of_feature.length === 0 &&
+                (!this.hide_zero_voltage ||
+                  (subfeat.endsWith("input") && this.raw_data[chip][feature][subfeat] > 0)
+                )
+            ) {
+              type_of_feature = "currents";
+            }
+          } else {
+            type_of_feature = "ignored";
+            continue
           }
-          feature_dico[subfeature_name] = this.raw_data[chip][feature][subfeat];
+          if (type_of_feature != "ignored")
+            feature_dico[subfeature_name] = this.raw_data[chip][feature][subfeat];
         }
 
-        Util.unref(subfeatures);
+        subfeatures = null;
 
-        if (type_of_feature !== "") {
-          data[type_of_feature][complete_name + ": " + feature] = feature_dico;
+        if (type_of_feature.length > 0) {
+          LOCAL_DATA[type_of_feature][complete_name + ": " + feature] = feature_dico;
           type_of_feature = null;
           feature_dico = null;
         }
       }
       complete_name = null;
-      Util.unref(features)
+      //Util.unref(features)
+      features = null;
     }
-    //log("data: " + JSON.stringify(data, null, "\t"));
-    this.data = data;
-    data = null;
-    Util.unref(chips);
+
+    //~ log("LOCAL_DATA[temps]: " + JSON.stringify(LOCAL_DATA["temps"], null, "\t"), true);
+    this.data = LOCAL_DATA;
+    //~ LOCAL_DATA = null;
+    chips = null;
     adapter = null;
     this.isRunning = false;
     this.emit("sensors-data-available");
@@ -222,12 +540,13 @@ function convert_to_json(raw) {
   var feature = "";
   //~ var subfeature_numbers = {};
   for (let line of lines) {
-    if (line.trim() == "") {
+    if (line.trim().length === 0) {
       new_chip = true;
       continue;
     }
     if (new_chip) {
-      chip = line.trim();
+      //~ chip = line.trim();
+      chip = line;
       ret[chip] = {};
       new_chip = false;
       continue;
@@ -237,14 +556,8 @@ function convert_to_json(raw) {
       continue;
     }
     if (line.startsWith("  ")) {
-      let [subfeature, value] = line.trim().split(": ");
-      //~ let sf_keys = Object.keys(subfeature_numbers);
-      //~ if (sf_keys.indexOf(subfeature) > -1) {
-        //~ subfeature_numbers[subfeature] = subfeature_numbers[subfeature] + 1;
-        //~ subfeature = subfeature + " - " + subfeature_numbers[subfeature];
-      //~ } else {
-        //~ subfeature_numbers[subfeature] = 0
-      //~ }
+      //~ let [subfeature, value] = line.trim().split(": ");
+      let [subfeature, value] = line.split(": ");
       ret[chip][feature][subfeature] = (value*1000/1000).toFixed(3);
       continue;
     }
@@ -258,5 +571,6 @@ function convert_to_json(raw) {
 }
 
 Signals.addSignalMethods(SensorsReaper.prototype);
-
-module.exports = {SensorsReaper}
+if (!Extension.getCurrentExtension) {
+  module.exports = {SensorsReaper}
+}

@@ -23,11 +23,11 @@ Any suggestion to improve this _Sensors@claudiux_ applet is welcome.
 
   * All values are displayed in your local format.
 
-  * Many display options are present in the settings.
+  * The settings offer a wide range of display options, as well as the ability to choose the color of each sensor if you wish.
 
   * The menu of this applet gives you direct access to the different kinds of settings, and contains useful shortcuts.
 
-  * Avoid wasted processor time and memory leaks.
+  * Avoids wasted processor time and memory leaks.
 
 ## Dependencies
 
@@ -95,6 +95,19 @@ Alternatively, run the commands:
 
 Then, log out and log in your session.
 
+
+### How to display Nvidia video card temperature?
+
+The applet will now automatically detect the existence of the *nvidia-smi* tool version 550.107.02 or higher, test to ensure that the tool is compatible, and if so will present the **Nvidia GPU** temperature sensors. The applet will log an *info* entry if the tool is found and works, or an *error* entry if the tools is found and fails.
+
+The *nvidia-smi* tool is part of the Nvidia closed source drivers, and only supports ["NVIDIA's Tesla, Quadro, GRID and GeForce devices from Fermi and higher architecture families"](https://docs.nvidia.com/deploy/nvidia-smi/index.html). 
+
+(While the tool does report fan speed, it does so as a percentage so is not compatible with the fan speed features of the applet.)
+
+When requesting help with this feature, please include the output of `nvidia-smi -L` as well as any entries in the '~/.xsession-errors' file related to 'Nvidia SMI'.
+
+*Many thanks to @JEleniel for her contribution!*
+
 ### My PC has several temperature sensors and their values ​​are different. Why and which one to choose?
 
 Example:
@@ -161,7 +174,11 @@ If you have specific hardware, try to put into the `/etc/sensors.d/` folder (wit
 
 Any contribution or translation is welcome!
 
-### Translations
+### Contributors
+  * [@JEleniel](https://github.com/JEleniel): support for NVidia video cards.
+  * [@G4Zz0L1](https://github.com/G4Zz0L1): support for Cinnamon 6.8.
+
+## Translations
 
 [Status of translations](https://github.com/linuxmint/cinnamon-spices-applets/blob/translation-status-tables/.translation-tables/tables/Sensors%40claudiux.md#)
 
